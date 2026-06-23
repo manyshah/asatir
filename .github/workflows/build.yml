@@ -1,0 +1,129 @@
+name: Build Flutter APK and AAB from latest ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    name: Build Android artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select latest ZIP or current repository
+        id: select_project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/_work_project"
+
+          ZIP_FILE=""
+          if ls -1t *.zip >/dev/null 2>&1; then
+            ZIP_FILE="$(ls -1t *.zip | head -n 1)"
+            echo "Using latest ZIP: $ZIP_FILE"
+            unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/_work_project"
+          else
+            echo "No ZIP found in repository root. Using checked-out repository."
+            rsync -a --exclude='.git' --exclude='_work_project' ./ "$GITHUB_WORKSPACE/_work_project/"
+          fi
+
+          PROJECT_DIR="$(find "$GITHUB_WORKSPACE/_work_project" -name pubspec.yaml -type f -print -quit | xargs dirname)"
+          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
+            echo "ERROR: No Flutter project found. pubspec.yaml was not found."
+            exit 1
+          fi
+
+          echo "Project directory: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Show Flutter version
+        shell: bash
+        run: flutter --version
+
+      - name: Prepare Android project if missing
+        shell: bash
+        working-directory: ${{ steps.select_project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          if [ ! -d android ]; then
+            echo "Android folder not found. Creating Android platform files..."
+            flutter create --platforms=android --org com.gamino .
+          fi
+
+      - name: Force fullscreen landscape metadata
+        shell: bash
+        working-directory: ${{ steps.select_project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/app/src/main/AndroidManifest.xml')
+          s = p.read_text()
+          if 'android:screenOrientation=' not in s:
+              s = s.replace('<activity\n            android:name=".MainActivity"', '<activity\n            android:name=".MainActivity"\n            android:screenOrientation="sensorLandscape"')
+          if 'android:theme="@style/LaunchTheme"' in s and 'android:exported="true"' in s:
+              pass
+          p.write_text(s)
+          PY
+          fi
+
+      - name: Flutter pub get
+        shell: bash
+        working-directory: ${{ steps.select_project.outputs.project_dir }}
+        run: flutter pub get
+
+      - name: Analyze project
+        shell: bash
+        working-directory: ${{ steps.select_project.outputs.project_dir }}
+        run: flutter analyze || true
+
+      - name: Build release APK
+        shell: bash
+        working-directory: ${{ steps.select_project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          flutter build apk --release
+
+      - name: Build release AAB optional
+        shell: bash
+        working-directory: ${{ steps.select_project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          flutter build appbundle --release || echo "AAB build failed, APK artifact will still be uploaded."
+
+      - name: Collect outputs
+        shell: bash
+        working-directory: ${{ steps.select_project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/android_outputs"
+          find build/app/outputs/flutter-apk -name "*.apk" -type f -exec cp {} "$GITHUB_WORKSPACE/android_outputs/" \; || true
+          find build/app/outputs/bundle -name "*.aab" -type f -exec cp {} "$GITHUB_WORKSPACE/android_outputs/" \; || true
+          ls -lah "$GITHUB_WORKSPACE/android_outputs"
+
+      - name: Upload APK and AAB artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarzamin-sarvat-android-builds
+          path: android_outputs/*
+          if-no-files-found: error
