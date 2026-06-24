@@ -63,35 +63,9 @@ jobs:
         working-directory: ${{ steps.select_project.outputs.project_dir }}
         run: |
           set -euo pipefail
-
           if [ ! -d android ]; then
             echo "Android folder not found. Creating Android platform files..."
             flutter create --platforms=android --org com.gamino .
-          fi
-
-      - name: Force fullscreen landscape metadata
-        shell: bash
-        working-directory: ${{ steps.select_project.outputs.project_dir }}
-        run: |
-          set -euo pipefail
-
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-
-          if [ -f "$MANIFEST" ]; then
-            python3 - <<'PY'
-from pathlib import Path
-
-p = Path("android/app/src/main/AndroidManifest.xml")
-s = p.read_text()
-
-if 'android:screenOrientation=' not in s:
-    s = s.replace(
-        '<activity\n            android:name=".MainActivity"',
-        '<activity\n            android:name=".MainActivity"\n            android:screenOrientation="sensorLandscape"'
-    )
-
-p.write_text(s)
-PY
           fi
 
       - name: Flutter pub get
@@ -107,9 +81,7 @@ PY
       - name: Build release APK
         shell: bash
         working-directory: ${{ steps.select_project.outputs.project_dir }}
-        run: |
-          set -euo pipefail
-          flutter build apk --release
+        run: flutter build apk --release
 
       - name: Collect APK output
         shell: bash
